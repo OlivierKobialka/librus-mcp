@@ -15,13 +15,14 @@ albo zmienne środowiskowe o tych samych nazwach.
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import random
 import sys
 import time
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
@@ -88,6 +89,18 @@ def redirect_target(response: requests.Response, base: str) -> str:
 
 def normalize(text: str) -> str:
     return text.lower().translate(str.maketrans("ąćęłńóśźż", "acelnoszz"))
+
+
+def today() -> date:
+    return date.today()
+
+
+def to_int(value) -> int | None:
+    """Librus podaje Id i numery lekcji raz jako liczby, raz jako tekst."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def check_date(value: str | None, name: str) -> str | None:
@@ -226,7 +239,7 @@ class Librus:
         return value
 
     def subject_names(self) -> dict[int, str]:
-        return {s["Id"]: s.get("Name", "?") for s in self.fetch("Subjects", "Subjects") or []}
+        return {to_int(s["Id"]): s.get("Name", "?") for s in self.fetch("Subjects", "Subjects") or []}
 
     def lesson_subject(self, lesson_id: int | None, subjects: dict[int, str]) -> str:
         if not self.lessons:
@@ -238,7 +251,7 @@ class Librus:
             except LibrusError:
                 lesson = {}
             self.lessons[lesson_id] = lesson
-        subject_id = ((lesson or {}).get("Subject") or {}).get("Id")
+        subject_id = to_int(((lesson or {}).get("Subject") or {}).get("Id"))
         return subjects.get(subject_id, "Nieznany przedmiot")
 
     def student(self) -> dict:
@@ -260,7 +273,7 @@ class Librus:
     def current_semester(self) -> int:
         end_first = (self.student().get("koniec_1_semestru") or "")[:10]
         if end_first:
-            return 1 if date.today().isoformat() <= end_first else 2
+            return 1 if today().isoformat() <= end_first else 2
         semesters = [a.get("Semester") for a in self.fetch("Attendances", "Attendances") or [] if a.get("Semester")]
         return max(semesters, default=1)
 
