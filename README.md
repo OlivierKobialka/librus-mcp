@@ -1,7 +1,7 @@
 # Librus MCP: frekwencja, plan lekcji, terminarz i oceny w Claude
 
 Serwer MCP, dzięki któremu Claude zna Twoją frekwencję, plan lekcji z zastępstwami, sprawdziany i oceny
-z Librus Synergia. Dane czyta biblioteka [librus-api](https://github.com/Mati365/librus-api).
+z Librus Synergia. Logowanie i dane obsługuje biblioteka [librus-api](https://github.com/Mati365/librus-api).
 
 Każdy stawia **własną kopię**: Twój login i hasło są tylko w Twoim Vercelu albo na Twoim komputerze.
 
@@ -82,23 +82,23 @@ Podłączenie (`<ŚCIEŻKA>` to pełna ścieżka do folderu projektu):
   ```
   Potem zamknij Claude całkowicie (także z zasobnika) i uruchom ponownie.
 
-## Ustawienia szkoły (`config.json`)
+## Daty semestru
 
-| Pole | Znaczenie |
-|---|---|
-| `koniec_1_semestru` | Ostatni dzień 1. semestru. Biblioteka nie podaje dat semestrów, więc wpisz datę swojej szkoły (albo ustaw zmienną `KONIEC_1_SEMESTRU`). |
-| `koniec_roku` | Ostatni dzień roku szkolnego; `null` = ostatni piątek czerwca (albo zmienna `KONIEC_ROKU`). |
-| `pokaz_pozalekcyjne` | `true` przełącza filtr Librusa „Ukryj nieobecności z przedmiotów pozalekcyjnych” na NIE, żeby liczyć też te nieobecności (albo zmienna `POKAZ_POZALEKCYJNE=1`). |
+Koniec 1. semestru i roku szkolnego serwer bierze z Librusa (dane Twojej klasy), więc zwykle nic nie trzeba ustawiać.
+Jeśli Librus ich nie poda, użyje `config.json` (`koniec_1_semestru`, `koniec_roku`; `null` = ostatni piątek stycznia / czerwca).
+Zmienne `KONIEC_1_SEMESTRU` i `KONIEC_ROKU` (RRRR-MM-DD) mają pierwszeństwo przed wszystkim.
 
-## Jak liczona jest frekwencja
+## Skąd są dane
 
-Strona frekwencji w Librusie pokazuje tylko nieobecności, więc liczba lekcji to lekcje z planu, które już się odbyły,
-bez odwołanych lekcji i dni wolnych z terminarza. Nieobecność trafia do przedmiotu po dacie i numerze lekcji.
-Spóźnienie i zwolnienie liczą się jako obecność, tak jak w Librusie.
-Wynik może trochę różnić się od frekwencja.edu.pl, np. gdy nauczyciel nie wpisał frekwencji na lekcji z planu.
+- **Plan lekcji, terminarz, oceny, nieobecności, dane ucznia:** biblioteka librus-api (strony Synergii).
+- **Frekwencja w procentach:** wpisy frekwencji z API JSON Librusa, pobierane przez sesję zalogowaną biblioteką.
+  To te same wpisy, które widzi wychowawca i frekwencja.edu.pl, razem z obecnościami i zajęciami pozalekcyjnymi.
+  Wpisy, które Librus oznacza jako obecność (np. spóźnienie, zwolnienie), liczą się jako obecność.
+- Gdyby API było niedostępne, serwer liczy frekwencję zapasowo z planu lekcji (bez odwołanych lekcji i dni wolnych)
+  i pisze to w wyniku: taka liczba lekcji bywa zawyżona.
 
 ## Dla programistów
 
 - `npm test`: testy bez sieci (udawany klient librus-api); uruchamiaj w kopii bez `.env`.
 - `node scripts/probe.mjs`: zapisuje do `debug/` surowe wyniki metod librus-api z Twojego konta (folder jest w `.gitignore`, zawiera Twoje dane, usuń go po użyciu).
-- Kod: `src/librus.mjs` (logowanie, cache, dane z biblioteki), `src/tools.mjs` (narzędzia MCP), `server.mjs` (stdio), `api/connector.js` (Vercel).
+- Kod: `src/librus.mjs` (logowanie, cache, dane z biblioteki i z API przez jej sesję), `src/tools.mjs` (narzędzia MCP), `server.mjs` (stdio), `api/connector.js` (Vercel).

@@ -59,11 +59,48 @@ const GRADES = [
   ] }, { grades: [] }, { grades: [] }, { grades: [] }] },
 ];
 
+// API JSON Librusa (gateway), czytane klientem HTTP biblioteki.
+const gw = (id, lesson, type, date, no, sem = 1) => ({ Id: id, Lesson: { Id: lesson }, Type: { Id: type }, Date: date, LessonNo: String(no), Semester: sem });
+const GATEWAY = {
+  Me: { Me: { Class: { Id: 5 } } },
+  "Classes/5": { Class: { EndFirstSemester: "2027-01-15", EndSchoolYear: "2027-06-25" } },
+  Subjects: { Subjects: [{ Id: 1, Name: "Matematyka" }, { Id: 2, Name: "Język polski" }, { Id: 3, Name: "Przygotowanie do egzaminu INF.04." }] },
+  Lessons: { Lessons: [{ Id: 10, Subject: { Id: 1 } }, { Id: 20, Subject: { Id: "2" } }] },
+  "Lessons/30": { Lesson: { Id: 30, Subject: { Id: 3 } } },
+  "Attendances/Types": { Types: [
+    { Id: 1, Name: "Nieobecność", Short: "nb", IsPresenceKind: false },
+    { Id: 2, Name: "Spóźnienie", Short: "sp", IsPresenceKind: true },
+    { Id: 3, Name: "Nieobecność uspr.", Short: "u", IsPresenceKind: false },
+    { Id: 100, Name: "Obecność", Short: "ob", IsPresenceKind: true },
+  ] },
+  Attendances: { Attendances: [
+    ...["2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11", "2026-09-14"].map((d, i) => gw(100 + i, 10, 100, d, 1)),
+    gw(110, 10, 2, "2026-09-15", 1),
+    ...["2026-10-19", "2026-10-20", "2026-10-21"].map((d, i) => gw(120 + i, 10, 1, d, 1)),
+    gw(200, 20, 100, "2026-09-07", 3), gw(201, 20, 100, "2026-09-08", 3),
+    ...["2026-09-09", "2026-09-10", "2026-09-11"].map((d, i) => gw(210 + i, 20, 3, d, 3)),
+    gw(300, 30, 1, "2026-10-12", 5), // zajęcia pozalekcyjne: w API są, na stronie frekwencji ukryte
+    gw(400, 10, 100, "2027-02-01", 1, 2),
+  ] },
+};
+
 let calls;
 let expireNextTimetable;
 let loginError;
+let gatewayMode;
 function fakeClient() {
   return {
+    _callerReady: Promise.resolve(),
+    caller: {
+      get: async (url) => {
+        const path = url.replace("https://synergia.librus.pl/gateway/api/2.0/", "");
+        calls.gateway.push(path);
+        if (gatewayMode === "down") return { status: 403, data: { Status: "Error", Message: "Request is denied" } };
+        if (gatewayMode === "expire-once") { gatewayMode = "ok"; return { status: 401, data: {} }; }
+        if (gatewayMode === "no-attendance" && path === "Attendances") return { status: 403, data: {} };
+        return GATEWAY[path] ? { status: 200, data: GATEWAY[path] } : { status: 404, data: {} };
+      },
+    },
     authorize: async () => { calls.authorize++; if (loginError) throw loginError; },
     info: {
       getAccountInfo: async () => ({ student: { nameSurname: "Jan Test", class: "5 a techniwaw", educator: "Nowak Anna" } }),
@@ -85,17 +122,61 @@ function fakeClient() {
 }
 
 beforeEach(() => {
-  calls = { authorize: 0, timetable: [], calendar: [], absenceDetail: [] };
+  calls = { authorize: 0, timetable: [], calendar: [], absenceDetail: [], gateway: [] };
   expireNextTimetable = false;
   loginError = null;
+  gatewayMode = "down"; // testy liczenia z planu; testy API przełączają na "ok"
   process.env.LIBRUS_LOGIN = "1234567u";
   process.env.LIBRUS_HASLO = "test";
   L.setClientFactory(fakeClient);
   L.clock.now = () => ({ date: "2026-10-21", time: "12:00" });
 });
 
-test("frekwencja: lekcje z planu minus odwołane i dni wolne, nieobecności po dacie i numerze lekcji", async () => {
+test("frekwencja z API: wpisy jak u wychowawcy, z obecnościami i zajęciami pozalekcyjnymi", async () => {
+  gatewayMode = "ok";
   const f = await frekwencja();
+  const by = Object.fromEntries(f.przedmioty.map((p) => [p.przedmiot, p]));
+  assert.equal(f.zrodlo, "wpisy frekwencji z Librusa");
+  assert.deepEqual(f.zakres, { semestr: 1, od: "2026-09-01", do: "2026-10-21" });
+  assert.deepEqual([f.ogolem.lekcje, f.ogolem.obecnosci, f.ogolem.frekwencja_proc], [16, 9, 56.25]);
+  assert.deepEqual([by.Matematyka.lekcje, by.Matematyka.obecnosci, by.Matematyka.frekwencja_proc], [10, 7, 70]);
+  assert.deepEqual(by.Matematyka.wg_typu, { "Obecność": 6, "Nieobecność": 3, "Spóźnienie": 1 });
+  assert.deepEqual([by["Język polski"].obecnosci_do_progu, by["Język polski"].ponizej_progu], [1, true]); // 2/5
+  assert.deepEqual([by["Przygotowanie do egzaminu INF.04."].lekcje, by["Przygotowanie do egzaminu INF.04."].obecnosci], [1, 0]);
+  assert.deepEqual(calls.gateway.filter((p) => p.startsWith("Lessons/")), ["Lessons/30"]); // lekcja spoza listy, raz
+  assert.equal((await frekwencja({ semestr: 0 })).ogolem.lekcje, 17);
+  assert.equal((await frekwencja({ semestr: 2 })).ogolem.lekcje, 1);
+  assert.equal((await frekwencja({ od: "2026-10-01" })).ogolem.lekcje, 4);
+  assert.equal(calls.authorize, 1);
+  assert.equal(calls.timetable.length, 1); // tylko bieżący tydzień, dla godzin lekcji
+  assert.equal((await doKoncaSemestru()).koniec, "2027-01-15");                         // data z klasy w API wygrywa z config.json
+});
+
+test("nieobecności z API: przedmiot i typ z wpisu, godziny z planu", async () => {
+  gatewayMode = "ok";
+  const n = await nieobecnosci();
+  assert.equal(n.liczba, 8);
+  assert.deepEqual(n.wpisy[0], { data: "2026-09-09", dzien: "środa", lekcja_nr: 3, godziny: "10:35–11:20", przedmiot: "Język polski",
+    typ: "Nieobecność uspr.", skrot: "u", obecnosc: false });
+  assert.equal((await nieobecnosci({ typ: "nb" })).liczba, 4);
+  assert.equal((await nieobecnosci({ przedmiot: "inf" })).wpisy[0].godziny, undefined); // lekcja 5 nie ma godzin w planie
+});
+
+test("API: wygasła sesja (401) – jedno ponowne logowanie; brak frekwencji w API – plan jako zapas", async () => {
+  gatewayMode = "expire-once";
+  assert.equal((await frekwencja()).ogolem.lekcje, 16);
+  assert.equal(calls.authorize, 2);
+  L.setClientFactory(fakeClient);
+  gatewayMode = "no-attendance";
+  const f = await frekwencja();
+  assert.equal(f.zrodlo, "plan lekcji (zapasowo)");
+  assert.match(f.uwaga, /niedostępne \(API Librusa odrzuciło Attendances \(HTTP 403\)\)/);
+  assert.equal(f.ogolem.lekcje, 63);
+});
+
+test("frekwencja zapasowo z planu: lekcje z planu minus odwołane i dni wolne, nieobecności po dacie i numerze lekcji", async () => {
+  const f = await frekwencja();
+  assert.equal(f.zrodlo, "plan lekcji (zapasowo)");
   const by = Object.fromEntries(f.przedmioty.map((p) => [p.przedmiot, p]));
   assert.deepEqual(f.uczen, { imie_nazwisko: "Jan Test", klasa: "5 a techniwaw", wychowawca: "Nowak Anna" });
   assert.deepEqual(f.zakres, { semestr: 1, od: "2026-09-01", do: "2026-10-21" });

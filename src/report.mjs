@@ -30,7 +30,7 @@ export async function runTest() {
   for (const p of att.przedmioty) {
     console.log(`  ${pad(p.przedmiot, 38)} ${String(p.frekwencja_proc).padStart(6)}%  ${String(p.obecnosci).padStart(3)}/${pad(p.lekcje, 3)}  ${status(p)}`);
   }
-  console.log(`\n${att.uwaga}`);
+  console.log(`\nŹródło: ${att.zrodlo}. ${att.uwaga}`);
 
   await section("Prognoza do końca semestru", async () => {
     const plan = await doKoncaSemestru();
@@ -53,7 +53,9 @@ export async function runTest() {
           l.uwaga && `[${l.uwaga}]`].filter(Boolean).join(" ");
         console.log(`    ${l.nr}. ${pad(l.godziny, 12)} ${pad(l.przedmiot, 34)} ${l.nauczyciel ?? "?"} | sala ${l.sala ?? "?"} ${flags}`.trimEnd());
       }
-      for (const e of d.wydarzenia || []) console.log(`    * ${e.kategoria}${e.przedmiot ? ` (${e.przedmiot})` : ""}: ${String(e.opis ?? "").slice(0, 60)}`);
+      for (const e of d.wydarzenia || []) {
+        console.log(`    * ${e.kategoria}${e.przedmiot ? ` (${e.przedmiot})` : ""}: ${String(e.opis ?? "").replace(/\s+/g, " ").slice(0, 60)}`);
+      }
     }
   });
 

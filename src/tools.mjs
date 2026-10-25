@@ -34,15 +34,34 @@ function attendanceStats(rows, prog) {
 
 const matches = (filter, name) => !filter || L.normalize(name).includes(L.normalize(filter));
 
-/** Lekcje, które już się odbyły (plan bez odwołanych i dni wolnych), z nałożonymi nieobecnościami. */
-async function attendanceRows({ semestr, od, do: to, przedmiot }) {
-  const sem = semestr ?? L.currentSemester();
-  const [semStart, semEnd] = sem === 0 ? [L.schoolYearStart(), L.config().koniecRoku] : L.semesterRange(sem);
-  const start = L.checkDate(od, "od") || semStart;
-  const requestedEnd = L.checkDate(to, "do") || semEnd;
-  const end = requestedEnd < L.today() ? requestedEnd : L.today();
-  if (start > end) return { sem, start, end: requestedEnd, rows: [] };
+const rowSort = (a, b) => a.data.localeCompare(b.data) || (a.lekcja_nr ?? 0) - (b.lekcja_nr ?? 0);
 
+/** Wpisy frekwencji dla semestru (0 = cały rok) i filtrów; z API Librusa, a gdy jest niedostępne – z planu lekcji. */
+async function attendanceRows({ semestr, od, do: to, przedmiot }) {
+  const from = L.checkDate(od, "od");
+  const until = L.checkDate(to, "do");
+  const sem = semestr ?? (await L.currentSemester());
+  const [semStart, semEnd] = await L.semesterRange(sem);
+  const start = from || semStart;
+  const requestedEnd = until || semEnd;
+  const end = requestedEnd < L.today() ? requestedEnd : L.today();
+  try {
+    const [records, hours] = await Promise.all([L.attendanceRecords(), L.lessonHours()]);
+    const inSemester = (r) => !sem || (r.semestr ? r.semestr === sem : r.data >= semStart && r.data <= semEnd);
+    const rows = records
+      .filter((r) => inSemester(r) && (!from || r.data >= from) && (!until || r.data <= until) && matches(przedmiot, r.przedmiot))
+      .map((r) => ({ data: r.data, dzien: L.DNI[L.weekday(r.data)], lekcja_nr: r.nr, godziny: hours.get(r.nr) ?? null,
+        przedmiot: r.przedmiot, typ: r.typ, skrot: r.skrot, obecnosc: r.obecnosc }))
+      .sort(rowSort);
+    return { sem, start, end, rows, zrodlo: "wpisy" };
+  } catch (e) {
+    if (!(e instanceof L.GatewayError)) throw e;
+    return { sem, start, end, rows: start > end ? [] : await planRows({ start, end, przedmiot }), zrodlo: "plan", blad: e.message };
+  }
+}
+
+/** Zapasowo: lekcje z planu, które już się odbyły (bez odwołanych i dni wolnych), z nałożonymi nieobecnościami. */
+async function planRows({ start, end, przedmiot }) {
   const [{ lessons }, absences] = await Promise.all([L.lessons(start, end), L.absences()]);
   const anyLesson = new Map(lessons.map((l) => [`${l.data}#${l.nr}`, l]));
   const rows = new Map(
@@ -64,10 +83,7 @@ async function attendanceRows({ semestr, od, do: to, przedmiot }) {
     }
     Object.assign(row, { typ: a.typ, skrot: a.skrot, obecnosc: a.obecnosc });
   }
-  const list = [...rows.values()]
-    .filter((r) => matches(przedmiot, r.przedmiot))
-    .sort((a, b) => a.data.localeCompare(b.data) || a.lekcja_nr - b.lekcja_nr);
-  return { sem, start, end, rows: list };
+  return [...rows.values()].filter((r) => matches(przedmiot, r.przedmiot)).sort(rowSort);
 }
 
 function groupBy(rows, key) {
@@ -76,22 +92,25 @@ function groupBy(rows, key) {
   return [...groups.entries()].sort((a, b) => L.normalize(a[0]).localeCompare(L.normalize(b[0])));
 }
 
-function attendanceNote() {
-  return "Liczba lekcji to lekcje z planu Librusa, które już się odbyły (bez odwołanych i dni wolnych); " +
-    "spóźnienie i zwolnienie liczą się jako obecność." +
-    (L.config().pozalekcyjne ? "" : " Nieobecności z zajęć pozalekcyjnych są ukryte przez filtr Librusa.");
+function attendanceNote({ zrodlo, blad }) {
+  return zrodlo === "wpisy"
+    ? "Frekwencja z wpisów w Librusie (to samo, co widzi wychowawca); wpisy, które Librus oznacza jako obecność " +
+      "(np. spóźnienie, zwolnienie), liczą się jako obecność."
+    : `API frekwencji Librusa jest niedostępne (${blad}), więc liczba lekcji jest policzona z planu (bez odwołanych ` +
+      "i dni wolnych) i może być zawyżona; nieobecności z zajęć pozalekcyjnych są ukryte przez filtr Librusa.";
 }
 
 export async function frekwencja({ semestr, od, do: to, przedmiot, prog = 50 } = {}) {
   if (!(prog > 0 && prog <= 100)) throw new Error("prog musi być z przedziału (0, 100].");
-  const { sem, start, end, rows } = await attendanceRows({ semestr, od, do: to, przedmiot });
+  const att = await attendanceRows({ semestr, od, do: to, przedmiot });
   return {
     uczen: await L.student(),
-    zakres: L.compact({ semestr: sem || "cały rok", od: start, do: end, przedmiot }),
+    zakres: L.compact({ semestr: att.sem || "cały rok", od: att.start, do: att.end, przedmiot }),
     prog_proc: prog,
-    ogolem: attendanceStats(rows, prog),
-    przedmioty: groupBy(rows, "przedmiot").map(([name, list]) => ({ przedmiot: name, ...attendanceStats(list, prog) })),
-    uwaga: attendanceNote(),
+    ogolem: attendanceStats(att.rows, prog),
+    przedmioty: groupBy(att.rows, "przedmiot").map(([name, list]) => ({ przedmiot: name, ...attendanceStats(list, prog) })),
+    zrodlo: att.zrodlo === "wpisy" ? "wpisy frekwencji z Librusa" : "plan lekcji (zapasowo)",
+    uwaga: attendanceNote(att),
   };
 }
 
@@ -114,9 +133,10 @@ function forecast(rows, left, prog) {
 
 export async function doKoncaSemestru({ prog = 50, przedmiot, koniec } = {}) {
   if (!(prog > 0 && prog <= 100)) throw new Error("prog musi być z przedziału (0, 100].");
-  const sem = L.currentSemester();
-  const end = L.checkDate(koniec, "koniec") || L.semesterRange(sem)[1];
-  const [{ rows }, upcoming] = await Promise.all([
+  const checked = L.checkDate(koniec, "koniec");
+  const sem = await L.currentSemester();
+  const end = checked || (await L.semesterRange(sem))[1];
+  const [att, upcoming] = await Promise.all([
     attendanceRows({ semestr: sem, przedmiot }),
     end >= L.today() ? L.lessons(L.today(), end) : { lessons: [] },
   ]);
@@ -124,25 +144,25 @@ export async function doKoncaSemestru({ prog = 50, przedmiot, koniec } = {}) {
   for (const l of upcoming.lessons) {
     if (!l.odwolana && !l.dzien_wolny && !L.isPast(l) && matches(przedmiot, l.przedmiot)) remaining[l.przedmiot] = (remaining[l.przedmiot] || 0) + 1;
   }
-  const bySubject = new Map(groupBy(rows, "przedmiot"));
+  const bySubject = new Map(groupBy(att.rows, "przedmiot"));
   const names = [...new Set([...bySubject.keys(), ...Object.keys(remaining)])].sort((a, b) => L.normalize(a).localeCompare(L.normalize(b)));
   return {
     semestr: sem,
     od: L.today(),
     koniec: end,
     prog_proc: prog,
-    ogolem: forecast(rows, Object.values(remaining).reduce((a, b) => a + b, 0), prog),
+    ogolem: forecast(att.rows, Object.values(remaining).reduce((a, b) => a + b, 0), prog),
     przedmioty: names.map((name) => ({ przedmiot: name, ...forecast(bySubject.get(name) || [], remaining[name] || 0, prog) })),
-    uwaga: "Pozostałe lekcje z planu Librusa bez odwołanych i dni wolnych wpisanych do terminarza. " + attendanceNote(),
+    uwaga: "Pozostałe lekcje z planu Librusa bez odwołanych i dni wolnych wpisanych do terminarza. " + attendanceNote(att),
   };
 }
 
 export async function nieobecnosci({ od, do: to, przedmiot, semestr, typ } = {}) {
-  const { rows } = await attendanceRows({ semestr: semestr ?? 0, od, do: to, przedmiot });
-  const list = rows
-    .filter((r) => r.skrot !== "ob")
+  const att = await attendanceRows({ semestr: semestr ?? 0, od, do: to, przedmiot });
+  const list = att.rows
+    .filter((r) => L.normalize(r.skrot) !== "ob")
     .filter((r) => !typ || L.normalize(r.skrot) === L.normalize(typ) || L.normalize(r.typ).includes(L.normalize(typ)));
-  return { liczba: list.length, wpisy: list.map((r) => L.compact(r)), uwaga: attendanceNote() };
+  return { liczba: list.length, wpisy: list.map((r) => L.compact(r)), uwaga: attendanceNote(att) };
 }
 
 // --- plan i terminarz --------------------------------------------------------------------------

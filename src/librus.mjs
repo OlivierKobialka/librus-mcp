@@ -1,5 +1,6 @@
 // Dostęp do Librus Synergia przez bibliotekę librus-api (Mati365): logowanie, cache i dane w prostej postaci.
-// Biblioteka czyta strony HTML Synergii, więc wszystko poniżej opiera się na tym, co zwracają jej metody.
+// Plan, terminarz, oceny i nieobecności czyta biblioteka (strony HTML Synergii). Wpisy frekwencji i daty semestru
+// bierzemy z API JSON Librusa przez tę samą, zalogowaną biblioteką sesję: strona frekwencji nie pokazuje obecności.
 import fs from "node:fs";
 import { createRequire } from "node:module";
 
@@ -13,6 +14,8 @@ const NIEOBECNE = new Set(["nb", "u"]); // spóźnienie i zwolnienie Librus licz
 const CACHE_TTL = 10 * 60 * 1000; // Claude często pyta kilka razy z rzędu
 const SESSION_TTL = 8 * 60 * 1000; // przy wygasłej sesji biblioteka zwraca puste wyniki zamiast błędu
 const CONCURRENCY = 3;
+const GATEWAY = "https://synergia.librus.pl/gateway/api/2.0";
+const MAX_LESSON_LOOKUPS = 60; // lekcje spoza listy Lessons dociągamy pojedynczo, więc z limitem
 
 // --- konfiguracja i środowisko -------------------------------------------------------------
 
@@ -29,15 +32,9 @@ function loadEnv() {
   }
 }
 
-export function config() {
+function configFile() {
   const path = new URL("config.json", ROOT);
-  const file = fs.existsSync(path) ? JSON.parse(fs.readFileSync(path, "utf8")) : {};
-  const year = Number(schoolYearStart().slice(0, 4));
-  return {
-    koniec1: process.env.KONIEC_1_SEMESTRU || file.koniec_1_semestru || lastWeekday(`${year + 1}-01-31`, 4),
-    koniecRoku: process.env.KONIEC_ROKU || file.koniec_roku || lastWeekday(`${year + 1}-06-30`, 4),
-    pozalekcyjne: process.env.POKAZ_POZALEKCYJNE ? process.env.POKAZ_POZALEKCYJNE === "1" : Boolean(file.pokaz_pozalekcyjne),
-  };
+  return fs.existsSync(path) ? JSON.parse(fs.readFileSync(path, "utf8")) : {};
 }
 
 // --- daty (zawsze czas polski, także na Vercelu) -------------------------------------------
@@ -71,13 +68,35 @@ export function schoolYearStart() {
   return `${m >= 8 ? y : y - 1}-09-01`;
 }
 
-export function semesterRange(semestr) {
-  const { koniec1, koniecRoku } = config();
-  return semestr === 2 ? [addDays(koniec1, 1), koniecRoku] : [schoolYearStart(), koniec1];
+/** Daty semestrów: zmienne środowiskowe, potem klasa z API Librusa, potem config.json, na końcu typowe daty. */
+export function semesterDates() {
+  return cached("semester-dates", async () => {
+    const year = Number(schoolYearStart().slice(0, 4));
+    const file = configFile();
+    let api = {};
+    if (!process.env.KONIEC_1_SEMESTRU || !process.env.KONIEC_ROKU) {
+      try {
+        const classId = (await gateway("Me"))?.Me?.Class?.Id;
+        const cls = classId ? (await gateway(`Classes/${classId}`))?.Class : null;
+        api = { koniec1: cls?.EndFirstSemester?.slice(0, 10), koniecRoku: cls?.EndSchoolYear?.slice(0, 10) };
+      } catch (e) {
+        if (!(e instanceof GatewayError)) throw e;
+      }
+    }
+    return {
+      koniec1: process.env.KONIEC_1_SEMESTRU || api.koniec1 || file.koniec_1_semestru || lastWeekday(`${year + 1}-01-31`, 4),
+      koniecRoku: process.env.KONIEC_ROKU || api.koniecRoku || file.koniec_roku || lastWeekday(`${year + 1}-06-30`, 4),
+    };
+  });
 }
 
-export function currentSemester() {
-  return today() <= config().koniec1 ? 1 : 2;
+export async function semesterRange(semestr) {
+  const { koniec1, koniecRoku } = await semesterDates();
+  return semestr === 2 ? [addDays(koniec1, 1), koniecRoku] : semestr === 0 ? [schoolYearStart(), koniecRoku] : [schoolYearStart(), koniec1];
+}
+
+export async function currentSemester() {
+  return today() <= (await semesterDates()).koniec1 ? 1 : 2;
 }
 
 export function checkDate(value, name) {
@@ -140,7 +159,7 @@ async function login() {
     }
     throw new Error(`Logowanie do Librusa nieudane: ${e?.message || e}. Jeśli to chwilowe (np. przerwa techniczna), spróbuj za kilka minut.`);
   }
-  session = { client, at: Date.now(), filterSet: false };
+  session = { client, at: Date.now() };
   return session;
 }
 
@@ -315,24 +334,11 @@ export function isPast(lesson) {
   return lesson.data < now.date || (lesson.data === now.date && lessonEnd(lesson) <= now.time);
 }
 
-async function showExtracurricular(s) {
-  // Strona frekwencji domyślnie ukrywa nieobecności z zajęć pozalekcyjnych (filtr „Ukryj …: TAK”).
-  // Ustawiamy filtr na NIE tym samym formularzem co w przeglądarce, potem biblioteka czyta stronę jak zwykle.
-  if (s.filterSet) return;
-  await s.client._callerReady;
-  const page = await s.client.caller.get("https://synergia.librus.pl/przegladaj_nb/uczen");
-  const requestkey = String(page.data).match(/name="requestkey"\s+value="([^"]+)"/)?.[1] || "";
-  await s.client.caller.postForm("https://synergia.librus.pl/przegladaj_nb/uczen", { requestkey, ukryjPozalekcyjne: "0" });
-  s.filterSet = true;
-}
-
-/** Nieobecności z biblioteki: każda komórka to numer lekcji (0–10) danego dnia. */
+/** Nieobecności z biblioteki: każda komórka to numer lekcji (0–10) danego dnia.
+ * Strona Librusa domyślnie ukrywa tu zajęcia pozalekcyjne; wpisy z API (attendanceRecords) je mają. */
 export function absences() {
   return cached("absences", async () => {
-    const raw = await call(async (c) => {
-      if (config().pozalekcyjne) await showExtracurricular(session);
-      return c.absence.getAbsences();
-    }, (r) => r && typeof r === "object");
+    const raw = await call((c) => c.absence.getAbsences(), (r) => r && typeof r === "object");
     const list = [];
     for (const row of Object.values(raw).flat()) {
       const data = String(row?.date || "").slice(0, 10);
@@ -351,4 +357,71 @@ export function absenceSubject(id) {
 
 export function grades() {
   return cached("grades", () => call((c) => c.info.getGrades(), (r) => Array.isArray(r) && r.length > 0));
+}
+
+// --- API JSON Librusa przez sesję biblioteki -------------------------------------------------
+
+export class GatewayError extends Error {}
+
+const toInt = (value) => (value === null || value === undefined || value === "" || Number.isNaN(Number(value)) ? null : Number(value));
+
+/** GET na API Synergii klientem HTTP biblioteki (te same ciasteczka sesji); przy 401 jedno ponowne logowanie. */
+export async function gateway(path) {
+  const get = async (s) => {
+    await s.client._callerReady;
+    return s.client.caller.get(`${GATEWAY}/${path}`, { headers: { Accept: "application/json" }, validateStatus: () => true });
+  };
+  let s = await relogin(null);
+  let r = await get(s);
+  if (r.status === 401) {
+    s = await relogin(s);
+    r = await get(s);
+  }
+  if (r.status !== 200 || !r.data || typeof r.data !== "object") {
+    throw new GatewayError(`API Librusa odrzuciło ${path} (HTTP ${r.status})`);
+  }
+  return r.data;
+}
+
+/** Wszystkie wpisy frekwencji (obecności też) z przedmiotem, typem i semestrem – to samo, co widzi wychowawca. */
+export function attendanceRecords() {
+  return cached("gw:attendance", async () => {
+    const [types, subjects, lessonList, records] = await Promise.all(
+      ["Attendances/Types", "Subjects", "Lessons", "Attendances"].map((p) => gateway(p)),
+    );
+    const typeById = new Map((types.Types || []).map((t) => [toInt(t.Id), t]));
+    const subjectById = new Map((subjects.Subjects || []).map((s) => [toInt(s.Id), clean(s.Name)]));
+    const lessonSubject = new Map((lessonList.Lessons || []).map((l) => [toInt(l.Id), toInt(l.Subject?.Id)]));
+    const attendances = records.Attendances || [];
+    const missing = [...new Set(attendances.map((a) => toInt(a.Lesson?.Id)))]
+      .filter((id) => id !== null && !lessonSubject.has(id)).slice(0, MAX_LESSON_LOOKUPS);
+    await mapLimit(missing, async (id) => {
+      try {
+        lessonSubject.set(id, toInt((await gateway(`Lessons/${id}`))?.Lesson?.Subject?.Id));
+      } catch (e) {
+        if (!(e instanceof GatewayError)) throw e;
+      }
+    });
+    return attendances.map((a) => {
+      const type = typeById.get(toInt(a.Type?.Id)) || {};
+      return {
+        data: String(a.Date || "").slice(0, 10),
+        nr: toInt(a.LessonNo),
+        przedmiot: subjectById.get(lessonSubject.get(toInt(a.Lesson?.Id))) || "Nieznany przedmiot",
+        typ: clean(type.Name) || "?",
+        skrot: clean(type.Short) || "?",
+        obecnosc: Boolean(type.IsPresenceKind),
+        semestr: toInt(a.Semester),
+      };
+    });
+  });
+}
+
+/** Godziny lekcji po numerze, z planu bieżącego tygodnia (do opisu wpisów frekwencji). */
+export async function lessonHours() {
+  try {
+    return new Map((await week(mondayOf(today()))).map((l) => [l.nr, l.godziny]));
+  } catch {
+    return new Map();
+  }
 }
