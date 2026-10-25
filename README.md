@@ -1,83 +1,104 @@
-# Librus MCP: frekwencja i oceny dla Claude
+# Librus MCP: frekwencja, plan lekcji, terminarz i oceny w Claude
 
-Serwer MCP, który pobiera Twoją frekwencję i oceny z Librus Synergia. To te same dane,
-które pokazuje frekwencja.edu.pl, tylko że brane prosto z Librusa: login i hasło
-nie trafiają do żadnej strony pośredniczącej.
+Serwer MCP, dzięki któremu Claude zna Twoją frekwencję, plan lekcji z zastępstwami, sprawdziany i oceny
+z Librus Synergia. Dane czyta biblioteka [librus-api](https://github.com/Mati365/librus-api).
 
-## Narzędzia, które dostaje Claude
+Każdy stawia **własną kopię**: Twój login i hasło są tylko w Twoim Vercelu albo na Twoim komputerze.
+
+## Co potrafi
 
 | Narzędzie | Co zwraca |
 |---|---|
-| `frekwencja` | Frekwencja w bieżącym semestrze, ogółem i dla każdego przedmiotu: lekcje, obecności, nieobecności, %, rozbicie na typy wpisów, `obecnosci_do_progu` (na ilu kolejnych lekcjach musisz być, żeby dobić do progu) i `mozna_jeszcze_opuscic` (ile lekcji z rzędu możesz opuścić, zanim spadniesz pod próg). Filtry: semestr (`0` = cały rok), od/do, przedmiot, próg (domyślnie 50%). |
-| `do_konca_semestru` | Prognoza z planu lekcji: ile lekcji każdego przedmiotu zostało do końca semestru (bez odwołanych), czy zdążysz dobić do progu, ile z nich możesz jeszcze opuścić i jaką frekwencję maksymalnie możesz mieć na koniec. Filtry: próg, przedmiot, `koniec` (inna data końca, np. początek ferii). |
-| `plan_lekcji` | Plan dzień po dniu (domyślnie bieżący tydzień, w weekend następny; najwyżej 31 dni): nr lekcji, godziny, przedmiot, nauczyciel, sala, odwołane lekcje, zastępstwa z tym, co było zamiast, oraz dni wolne. |
-| `terminarz` | Sprawdziany, kartkówki i inne wydarzenia z terminarza Librusa (domyślnie 14 dni od dziś): data, lekcja, kategoria, przedmiot, opis, kto wpisał. Filtry: od/do, przedmiot, kategoria. |
-| `nieobecnosci` | Konkretne nieobecności, spóźnienia i zwolnienia: data, dzień tygodnia, nr lekcji, przedmiot, typ. Filtry: od/do, przedmiot, semestr, typ (np. `nb`, `sp`). |
-| `oceny` | Oceny cząstkowe z kategorią i wagą, średnia ważona (jak w Librusie: `+` = +0,5, `-` = −0,25) oraz oceny i propozycje semestralne/roczne. |
+| `frekwencja` | Frekwencja w bieżącym semestrze, ogółem i dla każdego przedmiotu: lekcje, obecności, nieobecności, %, typy wpisów, `obecnosci_do_progu` (na ilu kolejnych lekcjach musisz być, żeby dobić do 50%) i `mozna_jeszcze_opuscic`. |
+| `do_konca_semestru` | Ile lekcji każdego przedmiotu zostało do końca semestru, czy zdążysz dobić do progu i ile z nich możesz jeszcze opuścić. |
+| `plan_lekcji` | Plan dzień po dniu: godziny, przedmiot, nauczyciel, grupa, sala, odwołane lekcje, zastępstwa, dni wolne i sprawdziany danego dnia. |
+| `terminarz` | Sprawdziany, kartkówki, wycieczki i inne wydarzenia, a także odwołane lekcje i dni wolne. |
+| `nieobecnosci` | Konkretne nieobecności, spóźnienia i zwolnienia z datą, lekcją i przedmiotem. |
+| `oceny` | Oceny z kategorią, wagą i komentarzem, średnia ważona, oceny śródroczne i roczne. |
 
-## Uruchomienie
+Przykładowe pytania: *„Ile lekcji fizyki mogę jeszcze opuścić?”*, *„Co mam jutro i czy jest jakiś sprawdzian?”*,
+*„Czy zdążę dobić 50% z niemieckiego do końca semestru?”*, *„Jaka jest moja średnia z polskiego?”*
 
-1. **Login i hasło.** Otwórz plik `.env` w tym folderze i wpisz:
+## Szybki start: własny konektor na Vercelu (claude.ai, też na telefonie)
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FOlivierKobialka%2Flibrus-mcp&project-name=librus-mcp&repository-name=librus-mcp&env=LIBRUS_LOGIN,LIBRUS_HASLO,MCP_TOKEN&envDescription=Login%20i%20has%C5%82o%20do%20Librus%20Synergia%20oraz%20tajny%20token%20(min.%2032%20znaki%2C%20litery%2C%20cyfry%2C%20-%20i%20_)&envLink=https%3A%2F%2Fgithub.com%2FOlivierKobialka%2Flibrus-mcp%23readme)
+
+1. **Wygeneruj tajny token** (co najmniej 32 znaki). Zapisz go, będzie częścią adresu konektora.
+   - Windows (PowerShell):
+     ```powershell
+     $b = New-Object byte[] 24; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); -join ($b | % { $_.ToString('x2') })
+     ```
+   - macOS / Linux:
+     ```bash
+     openssl rand -hex 24
+     ```
+2. **Kliknij „Deploy with Vercel”** powyżej i zaloguj się kontem GitHub (darmowe konto Vercel wystarczy).
+   Vercel zrobi Twoją kopię repozytorium i zapyta o trzy zmienne:
+   - `LIBRUS_LOGIN`: login do **Librus Synergia** (np. `1234567u`; logowanie e-mailem z Librus Rodzina nie działa),
+   - `LIBRUS_HASLO`: hasło do Librusa,
+   - `MCP_TOKEN`: token z punktu 1.
+3. **Sprawdź wdrożenie:** otwórz `https://<twój-projekt>.vercel.app/health`. Wszystkie pola mają być `true`.
+4. **Dodaj konektor w claude.ai:** Ustawienia → Konektory → Dodaj własny konektor, adres:
    ```
-   LIBRUS_LOGIN=1234567u
-   LIBRUS_HASLO=twoje_haslo
+   https://<twój-projekt>.vercel.app/mcp/<MCP_TOKEN>
    ```
-   To login do **Librus Synergia** (ten sam, którym logujesz się na frekwencja.edu.pl).
-   Konta Librus Rodzina (logowanie e-mailem) nie są obsługiwane.
+5. W nowym czacie włącz konektor i zapytaj: *„Jaką mam frekwencję?”*
 
-2. **Test w terminalu:**
-   ```bash
-   uv run --script C:\Users\olivi\OneDrive\Pulpit\librus-mcp\librus_mcp.py --test
-   ```
-   Pokaże frekwencję dla każdego przedmiotu. Porównaj ją z frekwencja.edu.pl.
+**Bezpieczeństwo**
+- Adres z tokenem daje dostęp do Twoich ocen i frekwencji. Nie wysyłaj go nikomu, także znajomym: każdy robi swoją kopię.
+- Nie podawaj swojego hasła do Librusa ani adresu konektora nikomu, kto obiecuje „postawić Ci serwer”.
+- W Vercelu oznacz zmienne jako *Sensitive*. Jeśli adres wycieknie: zmień `MCP_TOKEN`, zrób Redeploy i podmień adres w claude.ai.
+- Każdy inny adres niż `/mcp/<token>` i `/health` zwraca 404, a `/health` pokazuje tylko, czy zmienne są ustawione.
 
-3. **Podłączenie do Claude** (już zrobione na tym komputerze; serwer działa lokalnie, więc tylko tutaj).
+## Lokalnie (Claude Code, Claude Desktop)
 
-   *Claude Code (terminal i zakładka Code w aplikacji):*
-   ```bash
-   claude mcp add librus --scope user -- C:\Users\olivi\.local\bin\uv.exe run --quiet --script C:\Users\olivi\OneDrive\Pulpit\librus-mcp\librus_mcp.py
-   ```
+Potrzebny [Node.js](https://nodejs.org) 20 lub nowszy.
 
-   *Claude Desktop (czat):* Ustawienia → Developer → Edit Config, a w pliku `claude_desktop_config.json`:
-   ```json
-   {
-     "mcpServers": {
-       "librus": {
-         "command": "C:\\Users\\olivi\\.local\\bin\\uv.exe",
-         "args": ["run", "--quiet", "--script", "C:\\Users\\olivi\\OneDrive\\Pulpit\\librus-mcp\\librus_mcp.py"]
-       }
-     }
-   }
-   ```
-   Potem zrestartuj Claude Desktop.
+```bash
+git clone https://github.com/OlivierKobialka/librus-mcp.git
+cd librus-mcp
+npm install
+```
 
-## Zdalny konektor (Vercel, claude.ai na każdym urządzeniu)
+W folderze projektu utwórz plik `.env`:
+```
+LIBRUS_LOGIN=1234567u
+LIBRUS_HASLO=twoje_haslo
+```
 
-Ten sam serwer działa też jako funkcja na Vercelu (`api/connector.py`, konfiguracja w `vercel.json`).
-Dostęp jest tylko przez tajny token w adresie; każdy inny adres zwraca 404.
+Test w terminalu (frekwencja, prognoza, plan na przyszły tydzień, terminarz, oceny):
+```bash
+node server.mjs --test
+```
 
-1. Wygeneruj token (zapisz go, będzie częścią adresu):
-   ```bash
-   python -c "import secrets; print(secrets.token_urlsafe(32))"
-   ```
-2. W Vercelu: projekt **librus-mcp** → Settings → Environment Variables, środowisko Production,
-   najlepiej jako *Sensitive*: `LIBRUS_LOGIN`, `LIBRUS_HASLO`, `MCP_TOKEN` (ten token).
-3. Wdrożenie idzie z gałęzi `master` na GitHubie. Po zmianie zmiennych zrób Redeploy.
-4. Sprawdzenie: https://librus-mcp.vercel.app/health pokazuje tylko, czy zmienne są ustawione.
-5. W claude.ai: Ustawienia → Konektory → Dodaj własny konektor, adres
-   `https://librus-mcp.vercel.app/mcp/<TOKEN>`.
+Podłączenie (`<ŚCIEŻKA>` to pełna ścieżka do folderu projektu):
+- **Claude Code:**
+  ```bash
+  claude mcp add librus --scope user -- node <ŚCIEŻKA>/server.mjs
+  ```
+- **Claude Desktop:** Ustawienia → Developer → Edit Config:
+  ```json
+  { "mcpServers": { "librus": { "command": "node", "args": ["<ŚCIEŻKA>/server.mjs"] } } }
+  ```
+  Potem zamknij Claude całkowicie (także z zasobnika) i uruchom ponownie.
 
-Kto zna ten adres, widzi Twoje oceny i frekwencję, więc nie udostępniaj go. Jeśli wycieknie,
-zmień `MCP_TOKEN` w Vercelu, zrób Redeploy i podmień adres konektora.
+## Ustawienia szkoły (`config.json`)
 
-Przykładowe pytania do Claude: *„Jaką mam frekwencję z matmy?”*, *„Ile lekcji fizyki mogę jeszcze opuścić?”*,
-*„W które dni tygodnia najczęściej mnie nie ma?”*, *„Jaka jest moja średnia z polskiego?”*
+| Pole | Znaczenie |
+|---|---|
+| `koniec_1_semestru` | Ostatni dzień 1. semestru. Biblioteka nie podaje dat semestrów, więc wpisz datę swojej szkoły (albo ustaw zmienną `KONIEC_1_SEMESTRU`). |
+| `koniec_roku` | Ostatni dzień roku szkolnego; `null` = ostatni piątek czerwca (albo zmienna `KONIEC_ROKU`). |
+| `pokaz_pozalekcyjne` | `true` przełącza filtr Librusa „Ukryj nieobecności z przedmiotów pozalekcyjnych” na NIE, żeby liczyć też te nieobecności (albo zmienna `POKAZ_POZALEKCYJNE=1`). |
 
-## Dobrze wiedzieć
+## Jak liczona jest frekwencja
 
-- Dane są trzymane w pamięci przez 10 minut, więc kilka pytań z rzędu nie loguje się do Librusa od nowa.
-- Jako obecność liczą się wpisy, które Librus oznacza jako obecność (obecność, spóźnienie i podobne).
-- Po kilku nieudanych logowaniach Librus wymaga CAPTCHA. Serwer wtedy przestaje próbować i prosi,
-  żeby zalogować się raz ręcznie na synergia.librus.pl.
-- Plik `.env` zawiera hasło. Nie wrzucaj go do gita ani nikomu nie wysyłaj. Pulpit jest synchronizowany
-  z OneDrive, więc kopia `.env` trafia też na Twoje konto OneDrive.
+Strona frekwencji w Librusie pokazuje tylko nieobecności, więc liczba lekcji to lekcje z planu, które już się odbyły,
+bez odwołanych lekcji i dni wolnych z terminarza. Nieobecność trafia do przedmiotu po dacie i numerze lekcji.
+Spóźnienie i zwolnienie liczą się jako obecność, tak jak w Librusie.
+Wynik może trochę różnić się od frekwencja.edu.pl, np. gdy nauczyciel nie wpisał frekwencji na lekcji z planu.
+
+## Dla programistów
+
+- `npm test`: testy bez sieci (udawany klient librus-api); uruchamiaj w kopii bez `.env`.
+- `node scripts/probe.mjs`: zapisuje do `debug/` surowe wyniki metod librus-api z Twojego konta (folder jest w `.gitignore`, zawiera Twoje dane, usuń go po użyciu).
+- Kod: `src/librus.mjs` (logowanie, cache, dane z biblioteki), `src/tools.mjs` (narzędzia MCP), `server.mjs` (stdio), `api/connector.js` (Vercel).

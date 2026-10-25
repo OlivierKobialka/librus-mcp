@@ -1,7 +1,7 @@
 {
   "regions": ["fra1"],
   "functions": {
-    "api/connector.py": { "maxDuration": 60, "includeFiles": "librus_mcp.py" }
+    "api/connector.js": { "maxDuration": 60, "includeFiles": "{src/**,config.json}" }
   },
   "routes": [
     { "src": "/health", "dest": "/api/connector?health=1" },
