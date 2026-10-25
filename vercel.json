@@ -1,0 +1,11 @@
+{
+  "regions": ["fra1"],
+  "functions": {
+    "api/connector.py": { "maxDuration": 60, "includeFiles": "librus_mcp.py" }
+  },
+  "routes": [
+    { "src": "/health", "dest": "/api/connector?health=1" },
+    { "src": "/mcp/([A-Za-z0-9_-]{32,})/?", "dest": "/api/connector?token=$1" },
+    { "src": "/(.*)", "status": 404 }
+  ]
+}

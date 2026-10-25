@@ -49,6 +49,25 @@ nie trafiają do żadnej strony pośredniczącej.
    ```
    Potem zrestartuj Claude Desktop.
 
+## Zdalny konektor (Vercel, claude.ai na każdym urządzeniu)
+
+Ten sam serwer działa też jako funkcja na Vercelu (`api/connector.py`, konfiguracja w `vercel.json`).
+Dostęp jest tylko przez tajny token w adresie; każdy inny adres zwraca 404.
+
+1. Wygeneruj token (zapisz go, będzie częścią adresu):
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+2. W Vercelu: projekt **librus-mcp** → Settings → Environment Variables, środowisko Production,
+   najlepiej jako *Sensitive*: `LIBRUS_LOGIN`, `LIBRUS_HASLO`, `MCP_TOKEN` (ten token).
+3. Wdrożenie idzie z gałęzi `master` na GitHubie. Po zmianie zmiennych zrób Redeploy.
+4. Sprawdzenie: https://librus-mcp.vercel.app/health pokazuje tylko, czy zmienne są ustawione.
+5. W claude.ai: Ustawienia → Konektory → Dodaj własny konektor, adres
+   `https://librus-mcp.vercel.app/mcp/<TOKEN>`.
+
+Kto zna ten adres, widzi Twoje oceny i frekwencję, więc nie udostępniaj go. Jeśli wycieknie,
+zmień `MCP_TOKEN` w Vercelu, zrób Redeploy i podmień adres konektora.
+
 Przykładowe pytania do Claude: *„Jaką mam frekwencję z matmy?”*, *„Ile lekcji fizyki mogę jeszcze opuścić?”*,
 *„W które dni tygodnia najczęściej mnie nie ma?”*, *„Jaka jest moja średnia z polskiego?”*
 

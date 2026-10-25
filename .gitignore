@@ -1,1 +1,4 @@
 .env
+debug/
+__pycache__/
+.vercel/

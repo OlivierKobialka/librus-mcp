@@ -129,16 +129,17 @@ class Librus:
     def _login(self) -> requests.Session:
         load_env()
         user = os.environ.get("LIBRUS_LOGIN", "").strip()
-        password = os.environ.get("LIBRUS_HASLO", "")
+        password = os.environ.get("LIBRUS_HASLO", "").strip("\r\n")  # wklejone w panelu Vercela bywa z Enterem
         if not user or not password:
             raise LibrusError(
-                "Brak loginu lub hasła. Uzupełnij LIBRUS_LOGIN i LIBRUS_HASLO w pliku .env obok librus_mcp.py."
+                "Brak loginu lub hasła. Uzupełnij LIBRUS_LOGIN i LIBRUS_HASLO: lokalnie w pliku .env obok "
+                "librus_mcp.py, na Vercelu w Settings → Environment Variables (potem Redeploy)."
             )
         if "@" in user:
             raise LibrusError("Podaj login do Librus Synergia (np. 1234567u), a nie e-mail z Librus Rodzina.")
         # Ponawianie złego hasła kończy się CAPTCHA, więc tych samych danych nie próbujemy drugi raz.
         if self.rejected and self.rejected[0] == (user, password):
-            raise LibrusError(f"{self.rejected[1]} Popraw login lub hasło w pliku .env (zmiana działa bez restartu).")
+            raise LibrusError(f"{self.rejected[1]} Popraw LIBRUS_LOGIN / LIBRUS_HASLO (w .env albo w zmiennych Vercela).")
 
         s = requests.Session()
         s.headers["User-Agent"] = USER_AGENT
