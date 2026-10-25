@@ -391,6 +391,95 @@ def frekwencja(
     }
 
 
+def timetable_lessons(start: date, end: date) -> list[tuple[str, str, int | None]]:
+    """Lekcje z planu Librusa od start do end włącznie, bez odwołanych: (przedmiot, data, nr lekcji)."""
+    subjects = lib.subject_names()
+    lessons = []
+    monday = start - timedelta(days=start.weekday())
+    while monday <= end:
+        week = lib.fetch(f"Timetables?weekStart={monday.isoformat()}", "Timetable") or {}
+        for day, slots in week.items():
+            if not start.isoformat() <= day <= end.isoformat():
+                continue
+            for slot in slots.values() if isinstance(slots, dict) else slots or []:
+                for entry in [slot] if isinstance(slot, dict) else slot or []:
+                    if entry.get("IsCanceled"):
+                        continue
+                    subject = entry.get("Subject") or {}
+                    name = subjects.get(to_int(subject.get("Id"))) or subject.get("Name") or "Nieznany przedmiot"
+                    lessons.append((name, day, to_int(entry.get("LessonNo"))))
+        monday += timedelta(days=7)
+    return lessons
+
+
+def semester_forecast(rows: list[dict], left: int, prog: float) -> dict:
+    stats = attendance_stats(rows, prog)
+    present, total = stats["obecnosci"], stats["lekcje"]
+    # Ile z pozostałych lekcji można opuścić, żeby na koniec mieć (obecności + zostało - x) / (lekcje + zostało) >= próg.
+    allowed = math.floor(present + left - prog * (total + left) / 100 + 1e-9)
+    return {
+        "lekcje": total,
+        "obecnosci": present,
+        "frekwencja_proc": stats["frekwencja_proc"],
+        "zostalo_lekcji": left,
+        "obecnosci_do_progu": stats.get("obecnosci_do_progu", 0),
+        "zdazysz": allowed >= 0,
+        "mozna_opuscic_do_konca": min(max(allowed, 0), left),
+        "max_frekwencja_na_koniec_proc": round(100 * (present + left) / (total + left), 2) if total + left else None,
+    }
+
+
+@mcp.tool()
+def do_konca_semestru(prog: float = 50, przedmiot: str | None = None, koniec: str | None = None) -> dict:
+    """Czy zdążysz dobić do progu frekwencji do końca bieżącego semestru, według planu lekcji z Librusa.
+
+    Dla każdego przedmiotu: obecna frekwencja w semestrze oraz
+    - zostalo_lekcji: lekcje z planu od dziś do końca semestru (bez odwołanych i bez tych, które mają już wpis),
+    - obecnosci_do_progu: na ilu kolejnych lekcjach trzeba być, żeby dobić do progu,
+    - zdazysz: czy będąc na wszystkich pozostałych lekcjach skończysz semestr co najmniej na progu,
+    - mozna_opuscic_do_konca: ile z pozostałych lekcji można opuścić i nadal skończyć semestr na progu,
+    - max_frekwencja_na_koniec_proc: frekwencja na koniec, jeśli będziesz na wszystkich pozostałych lekcjach.
+    Plan z Librusa nie zawsze uwzględnia dni wolne (święta, ferie, wycieczki), więc lekcji może realnie być mniej.
+
+    Args:
+        prog: próg frekwencji w procentach (domyślnie 50).
+        przedmiot: fragment nazwy przedmiotu; domyślnie wszystkie.
+        koniec: ostatni dzień do policzenia RRRR-MM-DD; domyślnie koniec bieżącego semestru z Librusa.
+    """
+    if not 0 < prog <= 100:
+        raise LibrusError("prog musi być z przedziału (0, 100].")
+    semestr = lib.current_semester()
+    end = check_date(koniec, "koniec")
+    if not end:
+        end = (lib.student().get("koniec_1_semestru" if semestr == 1 else "koniec_roku") or "")[:10]
+    if not end:
+        raise LibrusError("Librus nie podaje daty końca semestru; podaj ją w parametrze koniec (RRRR-MM-DD).")
+
+    all_rows = attendance_rows(semestr, None, None, None)
+    done = {(r["data"], to_int(r["lekcja_nr"])) for r in all_rows}  # dzisiejsze lekcje z wpisem już się odbyły
+    wanted = lambda name: not przedmiot or normalize(przedmiot) in normalize(name)
+    remaining = Counter(
+        name for name, day, no in timetable_lessons(today(), date.fromisoformat(end))
+        if (day, no) not in done and wanted(name)
+    )
+    by_subject = defaultdict(list)
+    for r in all_rows:
+        if wanted(r["przedmiot"]):
+            by_subject[r["przedmiot"]].append(r)
+    return {
+        "semestr": semestr,
+        "od": today().isoformat(),
+        "koniec": end,
+        "prog_proc": prog,
+        "ogolem": semester_forecast([r for rs in by_subject.values() for r in rs], sum(remaining.values()), prog),
+        "przedmioty": [
+            {"przedmiot": name, **semester_forecast(by_subject.get(name, []), remaining.get(name, 0), prog)}
+            for name in sorted(set(by_subject) | set(remaining), key=normalize)
+        ],
+        "uwaga": "Pozostałe lekcje policzone z planu Librusa; dni wolnych, których szkoła nie wpisała, nie widać.",
+    }
+
+
 @mcp.tool()
 def nieobecnosci(
     od: str | None = None,
@@ -479,6 +568,15 @@ def save_debug_pages() -> None:
         print(f"  {path}: HTTP {r.status_code}, {len(r.text)} znaków -> debug/{name}.html")
 
 
+def save_timetable_debug() -> None:
+    folder = Path(__file__).with_name("debug")
+    folder.mkdir(exist_ok=True)
+    monday = today() - timedelta(days=today().weekday())
+    raw = lib.get(f"Timetables?weekStart={monday.isoformat()}")
+    (folder / "plan.json").write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
+    print("  Plan lekcji wygląda na pusty; zapisałem odpowiedź Librusa do debug/plan.json do analizy.")
+
+
 def run_test() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     try:
@@ -512,6 +610,20 @@ def run_test() -> None:
     for p in att["przedmioty"]:
         print(f"  {p['przedmiot'][:38]:<38} {p['frekwencja_proc']:>6}%  {p['obecnosci']:>3}/{p['lekcje']:<3}  {status(p)}")
     print("\n„Musisz być jeszcze N×” = tyle kolejnych lekcji bez żadnej nieobecności, żeby dobić do 50%.")
+    try:
+        plan = do_konca_semestru()
+    except LibrusError as e:
+        print(f"\nPrognoza do końca semestru niedostępna: {e}")
+    else:
+        print(f"\nDo końca semestru ({plan['koniec']}) wg planu zostało lekcji: {plan['ogolem']['zostalo_lekcji']}")
+        if not plan["ogolem"]["zostalo_lekcji"] and plan["od"] <= plan["koniec"]:
+            save_timetable_debug()
+        for p in plan["przedmioty"]:
+            verdict = (
+                f"zdążysz: możesz opuścić najwyżej {p['mozna_opuscic_do_konca']}" if p["zdazysz"]
+                else f"NIE zdążysz: nawet bez nieobecności skończysz na {p['max_frekwencja_na_koniec_proc']}%"
+            )
+            print(f"  {p['przedmiot'][:38]:<38} zostało {p['zostalo_lekcji']:>3}   {verdict}")
     count = sum(len(p["oceny"]) for p in grades["przedmioty"])
     print(f"\nOceny: {count} cząstkowych z {len(grades['przedmioty'])} przedmiotów.")
 

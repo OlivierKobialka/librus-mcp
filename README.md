@@ -9,6 +9,7 @@ nie trafiają do żadnej strony pośredniczącej.
 | Narzędzie | Co zwraca |
 |---|---|
 | `frekwencja` | Frekwencja w bieżącym semestrze, ogółem i dla każdego przedmiotu: lekcje, obecności, nieobecności, %, rozbicie na typy wpisów, `obecnosci_do_progu` (na ilu kolejnych lekcjach musisz być, żeby dobić do progu) i `mozna_jeszcze_opuscic` (ile lekcji z rzędu możesz opuścić, zanim spadniesz pod próg). Filtry: semestr (`0` = cały rok), od/do, przedmiot, próg (domyślnie 50%). |
+| `do_konca_semestru` | Prognoza z planu lekcji: ile lekcji każdego przedmiotu zostało do końca semestru (bez odwołanych), czy zdążysz dobić do progu, ile z nich możesz jeszcze opuścić i jaką frekwencję maksymalnie możesz mieć na koniec. Filtry: próg, przedmiot, `koniec` (inna data końca, np. początek ferii). |
 | `nieobecnosci` | Konkretne nieobecności, spóźnienia i zwolnienia: data, dzień tygodnia, nr lekcji, przedmiot, typ. Filtry: od/do, przedmiot, semestr, typ (np. `nb`, `sp`). |
 | `oceny` | Oceny cząstkowe z kategorią i wagą, średnia ważona (jak w Librusie: `+` = +0,5, `-` = −0,25) oraz oceny i propozycje semestralne/roczne. |
 
@@ -28,11 +29,11 @@ nie trafiają do żadnej strony pośredniczącej.
    ```
    Pokaże frekwencję dla każdego przedmiotu. Porównaj ją z frekwencja.edu.pl.
 
-3. **Podłączenie do Claude.**
+3. **Podłączenie do Claude** (już zrobione na tym komputerze; serwer działa lokalnie, więc tylko tutaj).
 
    *Claude Code (terminal i zakładka Code w aplikacji):*
    ```bash
-   claude mcp add librus --scope user -- C:\Users\olivi\.local\bin\uv.exe run --quiet --script "C:\Users\olivi\OneDrive\Pulpit\librus-mcp\librus_mcp.py"
+   claude mcp add librus --scope user -- C:\Users\olivi\.local\bin\uv.exe run --quiet --script C:\Users\olivi\OneDrive\Pulpit\librus-mcp\librus_mcp.py
    ```
 
    *Claude Desktop (czat):* Ustawienia → Developer → Edit Config, a w pliku `claude_desktop_config.json`:
