@@ -10,6 +10,8 @@ nie trafiają do żadnej strony pośredniczącej.
 |---|---|
 | `frekwencja` | Frekwencja w bieżącym semestrze, ogółem i dla każdego przedmiotu: lekcje, obecności, nieobecności, %, rozbicie na typy wpisów, `obecnosci_do_progu` (na ilu kolejnych lekcjach musisz być, żeby dobić do progu) i `mozna_jeszcze_opuscic` (ile lekcji z rzędu możesz opuścić, zanim spadniesz pod próg). Filtry: semestr (`0` = cały rok), od/do, przedmiot, próg (domyślnie 50%). |
 | `do_konca_semestru` | Prognoza z planu lekcji: ile lekcji każdego przedmiotu zostało do końca semestru (bez odwołanych), czy zdążysz dobić do progu, ile z nich możesz jeszcze opuścić i jaką frekwencję maksymalnie możesz mieć na koniec. Filtry: próg, przedmiot, `koniec` (inna data końca, np. początek ferii). |
+| `plan_lekcji` | Plan dzień po dniu (domyślnie bieżący tydzień, w weekend następny; najwyżej 31 dni): nr lekcji, godziny, przedmiot, nauczyciel, sala, odwołane lekcje, zastępstwa z tym, co było zamiast, oraz dni wolne. |
+| `terminarz` | Sprawdziany, kartkówki i inne wydarzenia z terminarza Librusa (domyślnie 14 dni od dziś): data, lekcja, kategoria, przedmiot, opis, kto wpisał. Filtry: od/do, przedmiot, kategoria. |
 | `nieobecnosci` | Konkretne nieobecności, spóźnienia i zwolnienia: data, dzień tygodnia, nr lekcji, przedmiot, typ. Filtry: od/do, przedmiot, semestr, typ (np. `nb`, `sp`). |
 | `oceny` | Oceny cząstkowe z kategorią i wagą, średnia ważona (jak w Librusie: `+` = +0,5, `-` = −0,25) oraz oceny i propozycje semestralne/roczne. |
 

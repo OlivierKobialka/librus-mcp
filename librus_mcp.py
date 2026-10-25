@@ -392,25 +392,82 @@ def frekwencja(
     }
 
 
-def timetable_lessons(start: date, end: date) -> list[tuple[str, str, int | None]]:
-    """Lekcje z planu Librusa od start do end włącznie, bez odwołanych: (przedmiot, data, nr lekcji)."""
-    subjects = lib.subject_names()
-    lessons = []
+def compact(entry: dict) -> dict:
+    return {k: v for k, v in entry.items() if v not in (None, "", [], {})}
+
+
+def lookup(path: str, key: str, label) -> dict[int, str]:
+    """Słownik Id -> nazwa z pomocniczego zasobu Librusa; brak dostępu nie psuje wyniku narzędzia."""
+    try:
+        items = lib.fetch(path, key) or []
+    except LibrusError:
+        return {}
+    return {to_int(item.get("Id")): label(item) for item in items}
+
+
+def teacher_names() -> dict[int, str]:
+    return lookup("Users", "Users", lambda u: f"{u.get('FirstName', '')} {u.get('LastName', '')}".strip())
+
+
+def classroom_names() -> dict[int, str]:
+    return lookup("Classrooms", "Classrooms", lambda c: c.get("Symbol") or c.get("Name"))
+
+
+def subject_name(ref: dict | None, subjects: dict[int, str]) -> str:
+    ref = ref or {}
+    return subjects.get(to_int(ref.get("Id"))) or ref.get("Name") or "Nieznany przedmiot"
+
+
+def person(ref: dict | None, teachers: dict[int, str]) -> str | None:
+    ref = ref or {}
+    return f"{ref.get('FirstName', '')} {ref.get('LastName', '')}".strip() or teachers.get(to_int(ref.get("Id")))
+
+
+def timetable_entries(start: date, end: date):
+    """Wpisy planu Librusa od start do end włącznie, razem z odwołanymi: (data, wpis)."""
     monday = start - timedelta(days=start.weekday())
     while monday <= end:
         week = lib.fetch(f"Timetables?weekStart={monday.isoformat()}", "Timetable") or {}
-        for day, slots in week.items():
+        for day, slots in sorted(week.items()):
             if not start.isoformat() <= day <= end.isoformat():
                 continue
             for slot in slots.values() if isinstance(slots, dict) else slots or []:
                 for entry in [slot] if isinstance(slot, dict) else slot or []:
-                    if entry.get("IsCanceled"):
-                        continue
-                    subject = entry.get("Subject") or {}
-                    name = subjects.get(to_int(subject.get("Id"))) or subject.get("Name") or "Nieznany przedmiot"
-                    lessons.append((name, day, to_int(entry.get("LessonNo"))))
+                    yield day, entry
         monday += timedelta(days=7)
-    return lessons
+
+
+def timetable_lessons(start: date, end: date) -> list[tuple[str, str, int | None]]:
+    """Lekcje z planu Librusa od start do end włącznie, bez odwołanych: (przedmiot, data, nr lekcji)."""
+    subjects = lib.subject_names()
+    return [
+        (subject_name(entry.get("Subject"), subjects), day, to_int(entry.get("LessonNo")))
+        for day, entry in timetable_entries(start, end)
+        if not entry.get("IsCanceled")
+    ]
+
+
+def free_days(start: date, end: date) -> list[dict]:
+    """Dni wolne szkoły nachodzące na zakres (jeśli szkoła je wpisała i Librus je udostępnia)."""
+    try:
+        items = lib.fetch("Calendars/SchoolFreeDays", "SchoolFreeDays") or []
+    except LibrusError:
+        return []
+    return [
+        compact({"od": f.get("DateFrom"), "do": f.get("DateTo"), "nazwa": f.get("Name")})
+        for f in items
+        if (f.get("DateFrom") or "")[:10] <= end.isoformat() and (f.get("DateTo") or f.get("DateFrom") or "")[:10] >= start.isoformat()
+    ]
+
+
+def date_range(od: str | None, do: str | None, default_start: date, default_days: int, max_days: int) -> tuple[date, date]:
+    start = date.fromisoformat(check_date(od, "od") or default_start.isoformat())
+    end = date.fromisoformat(check_date(do, "do") or (start + timedelta(days=default_days)).isoformat())
+    if end < start:
+        raise LibrusError("Data 'do' jest wcześniejsza niż 'od'.")
+    if (end - start).days > max_days:
+        raise LibrusError(f"Za długi zakres: najwyżej {max_days} dni naraz.")
+    return start, end
 
 
 def semester_forecast(rows: list[dict], left: int, prog: float) -> dict:
@@ -479,6 +536,102 @@ def do_konca_semestru(prog: float = 50, przedmiot: str | None = None, koniec: st
         ],
         "uwaga": "Pozostałe lekcje policzone z planu Librusa; dni wolnych, których szkoła nie wpisała, nie widać.",
     }
+
+
+@mcp.tool()
+def plan_lekcji(od: str | None = None, do: str | None = None) -> dict:
+    """Plan lekcji z Librusa dzień po dniu: numer lekcji, godziny, przedmiot, nauczyciel, sala,
+    odwołane lekcje i zastępstwa (z tym, co było w planie zamiast nich) oraz dni wolne.
+    Odwołania i zastępstwa szkoła wpisuje zwykle dzień lub dwa wcześniej, więc dalszy plan może się zmienić.
+
+    Args:
+        od: pierwszy dzień RRRR-MM-DD; domyślnie poniedziałek bieżącego tygodnia (w weekend: następnego).
+        do: ostatni dzień RRRR-MM-DD (najwyżej 31 dni od 'od'); domyślnie piątek tego tygodnia,
+            a gdy podano samo 'od' – tydzień od tego dnia.
+    """
+    d = today()
+    if d.weekday() >= 5:
+        d += timedelta(days=7 - d.weekday())
+    start, end = date_range(od, do, d - timedelta(days=d.weekday()), 4 if od is None else 6, 31)
+    subjects, teachers, rooms = lib.subject_names(), teacher_names(), classroom_names()
+    days = defaultdict(list)
+    for day, e in timetable_entries(start, end):
+        lesson = {
+            "nr": to_int(e.get("LessonNo")),
+            "godziny": f"{e['HourFrom']}–{e.get('HourTo', '?')}" if e.get("HourFrom") else None,
+            "przedmiot": subject_name(e.get("Subject"), subjects),
+            "nauczyciel": person(e.get("Teacher"), teachers),
+            "sala": rooms.get(to_int((e.get("Classroom") or {}).get("Id"))),
+            "odwolana": True if e.get("IsCanceled") else None,
+            "uwaga": e.get("SubstitutionNote"),
+        }
+        if e.get("IsSubstitutionClass"):
+            lesson["zastepstwo"] = True
+            lesson["zamiast"] = compact({
+                "przedmiot": subject_name(e["OrgSubject"], subjects) if e.get("OrgSubject") else None,
+                "nauczyciel": person(e.get("OrgTeacher"), teachers) if e.get("OrgTeacher") else None,
+                "sala": rooms.get(to_int((e.get("OrgClassroom") or {}).get("Id"))),
+                "data": e.get("OrgDate"),
+                "lekcja_nr": to_int(e.get("OrgLessonNo")),
+            })
+        days[day].append(compact(lesson))
+    return {
+        "od": start.isoformat(),
+        "do": end.isoformat(),
+        "dni": [
+            {"data": day, "dzien": DNI[date.fromisoformat(day).weekday()],
+             "lekcje": sorted(lessons, key=lambda l: l.get("nr") or 0)}
+            for day, lessons in sorted(days.items())
+        ],
+        "dni_wolne": free_days(start, end),
+    }
+
+
+@mcp.tool()
+def terminarz(
+    od: str | None = None,
+    do: str | None = None,
+    przedmiot: str | None = None,
+    kategoria: str | None = None,
+) -> dict:
+    """Terminarz z Librusa: sprawdziany, kartkówki, prace klasowe, wycieczki i inne wydarzenia,
+    z datą, numerem lekcji, kategorią, przedmiotem, opisem i nauczycielem, który je wpisał.
+    Widać tylko to, co nauczyciele wpisali do terminarza w Librusie.
+
+    Args:
+        od: pierwszy dzień RRRR-MM-DD; domyślnie dziś.
+        do: ostatni dzień RRRR-MM-DD; domyślnie 14 dni od 'od' (najwyżej 366 dni naraz).
+        przedmiot: fragment nazwy przedmiotu.
+        kategoria: fragment nazwy kategorii, np. "sprawdzian", "kartk".
+    """
+    start, end = date_range(od, do, today(), 14, 366)
+    categories = lookup("HomeWorks/Categories", "Categories", lambda c: c.get("Name"))
+    subjects, teachers = lib.subject_names(), teacher_names()
+    events = []
+    for ev in lib.fetch("HomeWorks", "HomeWorks") or []:
+        day = (ev.get("Date") or "")[:10]
+        if not start.isoformat() <= day <= end.isoformat():
+            continue
+        category = categories.get(to_int((ev.get("Category") or {}).get("Id"))) or "Inne"
+        subject = subject_name(ev.get("Subject"), subjects) if ev.get("Subject") else None
+        if przedmiot and normalize(przedmiot) not in normalize(subject or ""):
+            continue
+        if kategoria and normalize(kategoria) not in normalize(category):
+            continue
+        events.append(compact({
+            "data": day,
+            "dzien": DNI[date.fromisoformat(day).weekday()],
+            "lekcja_nr": to_int(ev.get("LessonNo")),
+            "godziny": f"{ev['TimeFrom']}–{ev.get('TimeTo', '?')}" if ev.get("TimeFrom") else None,
+            "kategoria": category,
+            "przedmiot": subject,
+            "opis": (ev.get("Content") or "").strip(),
+            "wpisal": person(ev.get("CreatedBy"), teachers),
+            "dodano": (ev.get("AddDate") or "")[:10],
+        }))
+    events.sort(key=lambda e: (e["data"], e.get("lekcja_nr") or 0))
+    return {"od": start.isoformat(), "do": end.isoformat(), "liczba": len(events), "wydarzenia": events,
+            "dni_wolne": free_days(start, end)}
 
 
 @mcp.tool()
@@ -627,6 +780,56 @@ def run_test() -> None:
             print(f"  {p['przedmiot'][:38]:<38} zostało {p['zostalo_lekcji']:>3}   {verdict}")
     count = sum(len(p["oceny"]) for p in grades["przedmioty"])
     print(f"\nOceny: {count} cząstkowych z {len(grades['przedmioty'])} przedmiotów.")
+    print_schedule_test()
+
+
+def save_debug_json(name: str, data) -> None:
+    folder = Path(__file__).with_name("debug")
+    folder.mkdir(exist_ok=True)
+    (folder / name).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"  Zapisałem odpowiedź Librusa do debug/{name} do analizy.")
+
+
+def print_schedule_test() -> None:
+    monday = today() + timedelta(days=7 - today().weekday())
+    try:
+        plan = plan_lekcji(od=monday.isoformat(), do=(monday + timedelta(days=4)).isoformat())
+    except LibrusError as e:
+        print(f"\nPlan lekcji niedostępny: {e}")
+    else:
+        print(f"\nPlan na przyszły tydzień ({plan['od']} – {plan['do']}):")
+        lessons = [l for d in plan["dni"] for l in d["lekcje"]]
+        for d in plan["dni"]:
+            print(f"  {d['dzien']} {d['data']}:")
+            for l in d["lekcje"]:
+                flags = " ".join(filter(None, [
+                    "ODWOŁANA" if l.get("odwolana") else "",
+                    f"ZASTĘPSTWO (zamiast: {l.get('zamiast')})" if l.get("zastepstwo") else "",
+                    f"[{l['uwaga']}]" if l.get("uwaga") else "",
+                ]))
+                print(f"    {l.get('nr', '?')}. {l.get('godziny', '?'):<12} {l['przedmiot'][:34]:<34} "
+                      f"{l.get('nauczyciel', '?')} | sala {l.get('sala', '?')} {flags}".rstrip())
+        for free in plan["dni_wolne"]:
+            print(f"  dzień wolny: {free}")
+        missing = [k for k in ("godziny", "nauczyciel", "sala") if lessons and not any(k in l for l in lessons)]
+        if missing or not lessons:
+            print(f"  Uwaga: brak danych ({', '.join(missing) or 'żadnych lekcji'}).")
+            save_debug_json("plan.json", lib.get(f"Timetables?weekStart={monday.isoformat()}"))
+    try:
+        cal = terminarz(do=(today() + timedelta(days=30)).isoformat())
+    except LibrusError as e:
+        print(f"\nTerminarz niedostępny: {e}")
+        return
+    print(f"\nTerminarz na 30 dni, wydarzeń: {cal['liczba']}")
+    for ev in cal["wydarzenia"]:
+        head = " ".join(filter(None, [
+            ev["data"], ev["dzien"][:3], f"lekcja {ev['lekcja_nr']}" if ev.get("lekcja_nr") else "",
+            ev["kategoria"], f"({ev['przedmiot']})" if ev.get("przedmiot") else "",
+        ]))
+        print(f"  {head}: {ev.get('opis', '')[:70]}")
+    if len(cal["wydarzenia"]) >= 3 and all(ev["kategoria"] == "Inne" for ev in cal["wydarzenia"]):
+        print("  Uwaga: żadne wydarzenie nie ma rozpoznanej kategorii.")
+        save_debug_json("terminarz.json", lib.get("HomeWorks/Categories"))
 
 
 if __name__ == "__main__":
